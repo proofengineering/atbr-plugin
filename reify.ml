@@ -6,17 +6,11 @@
 (*       Copyright 2009-2010: Thomas Braibant, Damien Pous.               *)
 (**************************************************************************)
 
-(** Generic reification, for the classes from [Classes.v] to the inductives from [Reification.v] *)
-
-(*i camlp4deps: "parsing/grammar.cma" i*)
-(*i camlp4use: "pa_extend.cmo" i*)
-
 open Constr
 open EConstr
 open Names
-open Ltac_plugin
 
-DECLARE PLUGIN "reification"
+let mkArrow x y = mkArrow x Sorts.Relevant y
 
 (* pick an element in an hashtbl *)
 let hashtbl_pick t = Hashtbl.fold (fun i x -> function None -> Some (i,x) | acc -> acc) t None
@@ -34,7 +28,7 @@ let fresh_name n env =
     
 (* access to Coq constants *)
 let get_const dir s = 
-  lazy (EConstr.of_constr (UnivGen.constr_of_global (Coqlib.find_reference "ATBR.reification" dir s)))
+  lazy (EConstr.of_constr (UnivGen.constr_of_monomorphic_global (Coqlib.find_reference "ATBR.reification" dir s)))
 
 (* make an application using a lazy value *)
 let force_app f = fun x -> mkApp (Lazy.force f,x)
@@ -205,7 +199,7 @@ module Tbl : sig
      yielding elements of type [typ], with [def] as default value *)
   val to_env: t -> constr -> constr -> constr
 end = struct
-  type t = ref ((constr*constr*constr) list * int)
+  type t = ((constr*constr*constr) list * int) ref
 
   let create () = ref([],1)
 
@@ -221,8 +215,8 @@ end = struct
 	  t := ((x,j,Lazy.force y)::l,i+1); j
     
   let to_env t typ def = match fst !t with
-    | [] -> mkLambda (Anonymous,Lazy.force Coq.positive,def)
-    | [_,_,x] -> mkLambda (Anonymous,Lazy.force Coq.positive,x)
+    | [] -> mkLambda (Context.make_annot Anonymous Sorts.Relevant,Lazy.force Coq.positive,def)
+    | [_,_,x] -> mkLambda (Context.make_annot Anonymous Sorts.Relevant,Lazy.force Coq.positive,x)
     | (_,_,x)::q ->
 	Reification.sigma_get typ x
 	  (List.fold_left
@@ -341,20 +335,16 @@ let reify_goal ops =
 
 	(* reified goal conclusion: add the relation over the two evaluated members *)
 	let reified = 
-	  mkNamedLetIn tenv_name tenv (mkArrow (Lazy.force Coq.positive) typ) (
-	    mkNamedLetIn env_name tenv' (Reification.env_type gph) (
-	      mkNamedLetIn ln lv x (
-		mkNamedLetIn rn rv x (
+	  mkNamedLetIn (Context.make_annot tenv_name Sorts.Relevant) tenv (mkArrow (Lazy.force Coq.positive) typ) (
+	    mkNamedLetIn (Context.make_annot env_name Sorts.Relevant) tenv' (Reification.env_type gph) (
+	      mkNamedLetIn (Context.make_annot ln Sorts.Relevant) lv x (
+		mkNamedLetIn (Context.make_annot rn Sorts.Relevant) rv x (
 		  (mkApp (rel, [|Reification.typ gph env_ref src; Reification.typ gph env_ref tgt;l;r|]))))))
 	in
 	  (try 
 	     Tacticals.New.tclTHEN (retype reified)
-	       (Tactics.convert_concl reified DEFAULTcast)
+	       (Tactics.convert_concl reified DEFAULTcast ~check:true)
 	   with e -> Feedback.msg_warning (Printer.pr_leconstr_env env sigma reified); raise e)
 	    
     | _ -> error "unrecognised goal"
-  end 	
-
-(* tactic grammar entries *)
-TACTIC EXTEND kleene_reify [ "kleene_reify" ] -> [ reify_goal Reification.KA.ops ] END
-TACTIC EXTEND semiring_reify [ "semiring_reify" ] -> [ reify_goal Reification.Semiring.ops ] END
+  end
